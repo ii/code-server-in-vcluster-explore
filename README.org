@@ -1,0 +1,434 @@
+#+title: Coder in vcluster explore
+
+* Purpose
+
+To bring up a vcluster with Cluster-API.
+Explore the usage of coder-server inside it.
+Compare the findings to Pair(current).
+
+* Initialise
+
+#+begin_src tmate :window vcoder
+clusterctl init --infrastructure vcluster
+#+end_src
+
+* Generate config from a template
+
+We will expect to talk to it over a NodePort, using the DNS name of this Pair cluster
+#+begin_src shell
+export CLUSTER_NAME=vcluster1
+export CLUSTER_NAMESPACE=vclusters
+export KUBERNETES_VERSION=1.23.4
+export HELM_VALUES="service:\n  type: NodePort\nsyncer:\n  extraArgs:\n    - --tls-san=bobymcbobs.pair.sharing.io"
+kubectl create namespace ${CLUSTER_NAMESPACE} \
+    -o yaml --dry-run=client > ./vclusters-vcluster1.yaml
+kubectl label ns ${CLUSTER_NAMESPACE} cert-manager-tls=sync
+echo '---' >> ./vclusters-vcluster1.yaml
+clusterctl generate cluster ${CLUSTER_NAME} \
+    --infrastructure vcluster \
+    --kubernetes-version ${KUBERNETES_VERSION} \
+    --target-namespace ${CLUSTER_NAMESPACE} >> ./vclusters-vcluster1.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+namespace/vclusters labeled
+#+end_example
+
+* Bring up the cluster
+
+#+begin_src shell
+kubectl apply -f ./vclusters-vcluster1.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+namespace/vclusters configured
+cluster.cluster.x-k8s.io/vcluster1 unchanged
+vcluster.infrastructure.cluster.x-k8s.io/vcluster1 configured
+#+end_example
+
+* See what's running
+
+#+begin_src shell
+kubectl -n vclusters get cluster,vcluster,svc,pods
+#+end_src
+
+#+RESULTS:
+#+begin_example
+NAME                                 PHASE         AGE   VERSION
+cluster.cluster.x-k8s.io/vcluster1   Provisioned   27m
+
+NAME                                                 AGE
+vcluster.infrastructure.cluster.x-k8s.io/vcluster1   27m
+
+NAME                                                    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                  AGE
+service/kube-dns-x-kube-system-x-vcluster1              ClusterIP   10.103.85.64     <none>        53/UDP,53/TCP,9153/TCP   27m
+service/vcluster1                                       NodePort    10.96.230.224    <none>        443:30667/TCP            27m
+service/vcluster1-headless                              ClusterIP   None             <none>        443/TCP                  27m
+service/vcluster1-node-bobymcbobs-control-plane-r778w   ClusterIP   10.101.240.152   <none>        10250/TCP                27m
+
+NAME                                                     READY   STATUS    RESTARTS   AGE
+pod/coredns-669fb9997d-29xqm-x-kube-system-x-vcluster1   1/1     Running   0          27m
+pod/vcluster1-0                                          2/2     Running   0          28s
+#+end_example
+
+* Get the Kubeconfig
+
+#+begin_src shell
+kubectl -n vclusters get secrets vcluster1-kubeconfig -o=jsonpath='{.data.value}' | base64 -d > ~/.kube/config-vcluster1
+#+end_src
+
+#+RESULTS:
+#+begin_example
+#+end_example
+
+* Create an Ingress for vcluster1's APIServer
+
+#+begin_src yaml :tangle ./vcluster1-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  name: vcluster1
+  namespace: vclusters
+spec:
+  ingressClassName: contour-external
+  rules:
+  - host: vcluster1.bobymcbobs.pair.shairng.io
+    http:
+      paths:
+      - backend:
+          service:
+            name: vcluster1
+            port:
+              number: 443
+        path: /
+        pathType: ImplementationSpecific
+  tls:
+  - hosts:
+      - vcluster1.bobymcbobs.pair.sharing.io
+#+end_src
+
+#+begin_src shell
+kubectl apply -f ./vcluster1-ingress.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+ingress.networking.k8s.io/vcluster1 created
+#+end_example
+
+* Get the Kubeconfig context
+
+#+begin_src shell
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl config set clusters.my-vcluster.server https://bobymcbobs.pair.sharing.io:30667
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Property "clusters.my-vcluster.server" set.
+#+end_example
+
+* Try to talk to it
+
+#+begin_src shell :prologue "(\n" :epilogue "\n) 2>&1 ; :"
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl cluster-info
+echo
+kubectl get pods,svc -A
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Kubernetes control plane is running at https://bobymcbobs.pair.sharing.io:30667
+CoreDNS is running at https://bobymcbobs.pair.sharing.io:30667/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+NAMESPACE     NAME                           READY   STATUS    RESTARTS   AGE
+kube-system   pod/coredns-669fb9997d-29xqm   1/1     Running   0          28m
+
+NAMESPACE     NAME                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                  AGE
+kube-system   service/kube-dns     ClusterIP   10.103.85.64    <none>        53/UDP,53/TCP,9153/TCP   28m
+default       service/kubernetes   ClusterIP   10.96.230.224   <none>        443/TCP                  28m
+#+end_example
+
+* Try ping a service on the host via a Cluster-IP
+
+#+begin_src shell
+HOST_SVC=$(kubectl -n default get svc kubernetes -o=jsonpath='{.spec.clusterIPs[0]}')
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl run -it --rm a --image=alpine:3.15 -- sh -c "apk add curl; curl -k https://${HOST_SVC}:443"
+#+end_src
+
+#+RESULTS:
+#+begin_example
+fetch https://dl-cdn.alpinelinux.org/alpine/v3.15/main/x86_64/APKINDEX.tar.gz
+fetch https://dl-cdn.alpinelinux.org/alpine/v3.15/community/x86_64/APKINDEX.tar.gz
+(1/5) Installing ca-certificates (20220614-r0)
+7  0%                                             87  1%                                             87  2%                                             87  2% #                                           87  3% #                                           87  4% #                                           87  4% ##                                          87  5% ##                                          87  6% ##                                          87  6% ###                                         87  7% ###                                         87  8% ###                                         87  9% ####                                        87 10% ####                                        87 11% ####                                        87 11% #####                                       87 12% #####                                       87 13% #####                                       87 13% ######                                      87 14% ######                                      87 15% ######                                      87 16% #######                                     87 17% #######                                     87 18% #######                                     87 18% ########                                    87 19% ########                                    87 20% ########                                    87 20% #########                                   87 21% #########                                   87 22% #########                                   87 22% ##########                                  87 23% ##########                                  87 24% ##########                                  87 25% ###########                                 87 26% ###########                                 8(2/5) Installing brotli-libs (1.0.9-r5)
+7 29% #############                               87 35% ###############                             87 37% ################                            8(3/5) Installing nghttp2-libs (1.46.0-r0)
+7 60% ##########################                  8(4/5) Installing libcurl (7.80.0-r3)
+7 67% #############################               8(5/5) Installing curl (7.80.0-r3)
+7 89% #######################################     87100% ############################################8Executing busybox-1.34.1-r7.trigger
+Executing ca-certificates-20220614-r0.trigger
+OK: 8 MiB in 19 packages
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {},
+  "code": 403
+}pod "a" deleted
+#+end_example
+
+Can still communicate on the host network
+
+Root on host please
+#+begin_src shell
+echo "Now:"
+TZ=Pacific/Auckland date
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl run h0nk --rm -it --image alpine --privileged --overrides '{"spec":{"hostPID": true}}' --command nsenter -- --mount=/proc/1/ns/mnt su root -c 'bash -c "TZ=Pacific/Auckland date > /pwned"'
+echo "Has pwn at:"
+cat /var/run/host/pwned
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Now:
+Tue Sep 27 04:18:31 PM NZDT 2022
+pod "h0nk" deleted
+Has pwn at:
+Tue Sep 27 16:19:17 NZDT 2022
+#+end_example
+whoops, root.
+
+12h off for some reason.
+
+There's a guide on securing vcluster deployments
+https://www.vcluster.com/docs/operator/security
+
+Is it possible to provide sufficient isolation? also while keeping it a free-to-anything development environment?
+
+* Deploy a test website
+
+#+begin_src shell
+export KUBECONFIG=~/.kube/config-vcluster1
+
+kubectl create deployment nginx --image=nginx:stable --port 80
+kubectl expose deployment nginx --port 80
+kubectl create ingress nginx --rule="nginx-in-vcluster1.bobymcbobs.pair.sharing.io/=nginx:80" --class=contour-external
+#+end_src
+
+#+RESULTS:
+#+begin_example
+ingress.networking.k8s.io/nginx created
+#+end_example
+
+Test
+#+begin_src shell :prologue "(\n" :epilogue "\n) 2>&1 ; :"
+curl -v http://nginx-in-vcluster1.bobymcbobs.pair.sharing.io/
+#+end_src
+
+#+RESULTS:
+#+begin_example
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying 86.109.11.89:80...
+,* Connected to nginx-in-vcluster1.bobymcbobs.pair.sharing.io (86.109.11.89) port 80 (#0)
+> GET / HTTP/1.1
+> Host: nginx-in-vcluster1.bobymcbobs.pair.sharing.io
+> User-Agent: curl/7.81.0
+> Accept: */*
+> 
+,* Mark bundle as not supporting multiuse
+< HTTP/1.1 200 OK
+< server: envoy
+< date: Tue, 27 Sep 2022 03:09:32 GMT
+< content-type: text/html
+< content-length: 615
+< last-modified: Mon, 23 May 2022 23:59:19 GMT
+< etag: "628c1fd7-267"
+< accept-ranges: bytes
+< x-envoy-upstream-service-time: 0
+< vary: Accept-Encoding
+< 
+{ [615 bytes data]
+100   615  100   615    0     0  67308      0 --:--:-- --:--:-- --:--:-- 68333
+,* Connection #0 to host nginx-in-vcluster1.bobymcbobs.pair.sharing.io left intact
+<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+html { color-scheme: light dark; }
+body { width: 35em; margin: 0 auto;
+font-family: Tahoma, Verdana, Arial, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.</p>
+
+<p>For online documentation and support please refer to
+<a href="http://nginx.org/">nginx.org</a>.<br/>
+Commercial support is available at
+<a href="http://nginx.com/">nginx.com</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>
+#+end_example
+
+This works because ingresses propigate to the host cluster.
+The ingresses that sync to the host cluster must have a valid IngressClassName from host cluster.
+
+An ingress controller could be deployed inside of the environment, but this would require it's own IP address to be allocated somehow.
+
+* Deploy code-server
+
+Set up RBAC
+
+#+begin_src yaml :tangle ./coder-deploy-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coder
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: coder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: coder
+    namespace: default
+#+end_src
+
+#+begin_src yaml :tangle ./code-server-values.yaml
+ingress:
+  enabled: true
+  ingressClassName: contour-external
+  # tls:
+  #   - secretName: letsencrypt-prod
+  #     hosts:
+  #       - code-server-in-vcluster.bobymcbobs.pair.sharing.io
+  hosts:
+    - host: code-server-in-vcluster.bobymcbobs.pair.sharing.io
+      paths:
+        - /
+
+persistence:
+  storageClass: local-path
+
+extraVars:
+  - name: DISABLE_TELEMETRY
+    value: "true"
+  - name: DOCKER_HOST
+    value: "tcp://localhost:2375"
+extraContainers: |
+  - name: docker-dind
+    image: docker:19.03-dind
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256M
+    securityContext:
+      privileged: true
+      procMount: Default
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    - name: DOCKER_DRIVER
+      value: "overlay2"
+
+extraInitContainers: |
+  - name: customization
+    image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+    imagePullPolicy: IfNotPresent
+    env:
+      - name: SERVICE_URL
+        value: https://open-vsx.org/vscode/gallery
+      - name: ITEM_URL
+        value: https://open-vsx.org/vscode/item
+    command:
+      - sh
+      - -c
+      - |
+        code-server --install-extension ms-python.python
+        code-server --install-extension golang.Go
+        code-server --install-extension ms-azuretools.vscode-docker
+    volumeMounts:
+      - name: data
+        mountPath: /home/coder
+#+end_src
+
+#+begin_src shell
+git clone https://github.com/coder/code-server /tmp/code-server
+#+end_src
+
+#+RESULTS:
+#+begin_example
+#+end_example
+
+Template and render a release from the chart
+#+begin_src shell
+helm template vcluster1 -n default -f ./code-server-values.yaml /tmp/code-server/ci/helm-chart > ./vcluster1-code-server.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+#+end_example
+
+Install
+#+begin_src shell
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl -n default apply -f ./coder-deploy-rbac.yaml -f ./vcluster1-code-server.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+serviceaccount/coder unchanged
+clusterrolebinding.rbac.authorization.k8s.io/coder unchanged
+serviceaccount/vcluster1-code-server unchanged
+persistentvolumeclaim/vcluster1-code-server unchanged
+service/vcluster1-code-server unchanged
+deployment.apps/vcluster1-code-server configured
+ingress.networking.k8s.io/vcluster1-code-server unchanged
+secret/vcluster1-code-server unchanged
+pod/vcluster1-code-server-test-connection unchanged
+#+end_example
+
+Get the login password
+#+begin_src shell :results silent
+export KUBECONFIG=~/.kube/config-vcluster1
+kubectl -n default get secrets vcluster1-code-server -o=jsonpath='{.data.password}' | base64 -d ; echo
+#+end_src
+
+* TODO
+- code-server ingress TLS
+  - sync from host to vcluster?
+  - access without websocket errors
+- resource constraints?
+- security?
+- feature parity?
+
+* Thoughts
+- this ends up as another form of time sharing and has many more complications and constraints
+- ii felt more freedom when having isolated Pair environments, when coming from working on a single server
+    - using virtual clusters may be similar to that

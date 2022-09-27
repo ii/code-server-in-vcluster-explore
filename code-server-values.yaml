@@ -1,0 +1,56 @@
+ingress:
+  enabled: true
+  ingressClassName: contour-external
+  # tls:
+  #   - secretName: letsencrypt-prod
+  #     hosts:
+  #       - code-server-in-vcluster.bobymcbobs.pair.sharing.io
+  hosts:
+    - host: code-server-in-vcluster.bobymcbobs.pair.sharing.io
+      paths:
+        - /
+
+persistence:
+  storageClass: local-path
+
+extraVars:
+  - name: DISABLE_TELEMETRY
+    value: "true"
+  - name: DOCKER_HOST
+    value: "tcp://localhost:2375"
+extraContainers: |
+  - name: docker-dind
+    image: docker:19.03-dind
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256M
+    securityContext:
+      privileged: true
+      procMount: Default
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    - name: DOCKER_DRIVER
+      value: "overlay2"
+
+extraInitContainers: |
+  - name: customization
+    image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+    imagePullPolicy: IfNotPresent
+    env:
+      - name: SERVICE_URL
+        value: https://open-vsx.org/vscode/gallery
+      - name: ITEM_URL
+        value: https://open-vsx.org/vscode/item
+    command:
+      - sh
+      - -c
+      - |
+        code-server --install-extension ms-python.python
+        code-server --install-extension golang.Go
+        code-server --install-extension ms-azuretools.vscode-docker
+    volumeMounts:
+      - name: data
+        mountPath: /home/coder

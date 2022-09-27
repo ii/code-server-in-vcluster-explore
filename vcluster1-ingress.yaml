@@ -1,0 +1,27 @@
+# Create an Ingress for vcluster1's APIServer
+
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  name: vcluster1
+  namespace: vclusters
+spec:
+  ingressClassName: contour-external
+  rules:
+  - host: vcluster1.bobymcbobs.pair.shairng.io
+    http:
+      paths:
+      - backend:
+          service:
+            name: vcluster1
+            port:
+              number: 443
+        path: /
+        pathType: ImplementationSpecific
+  tls:
+  - hosts:
+      - vcluster1.bobymcbobs.pair.sharing.io

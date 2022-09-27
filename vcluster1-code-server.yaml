@@ -1,0 +1,229 @@
+---
+# Source: code-server/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+  name: vcluster1-code-server
+---
+# Source: code-server/templates/pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: vcluster1-code-server
+  namespace: default
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"
+  storageClassName: "local-path"
+---
+# Source: code-server/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vcluster1-code-server
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: code-server
+    app.kubernetes.io/instance: vcluster1
+---
+# Source: code-server/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vcluster1-code-server
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: code-server
+      app.kubernetes.io/instance: vcluster1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: code-server
+        app.kubernetes.io/instance: vcluster1
+    spec:
+      imagePullSecrets:
+        []
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      - name: init-chmod-data
+        image: busybox:latest
+        imagePullPolicy: IfNotPresent
+        command:
+          - sh
+          - -c
+          - |
+            chown -R 1000:1000 /home/coder
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: data
+          mountPath: /home/coder
+      - name: customization
+        image: codercom/code-server:4.7.0
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: SERVICE_URL
+            value: https://open-vsx.org/vscode/gallery
+          - name: ITEM_URL
+            value: https://open-vsx.org/vscode/item
+        command:
+          - sh
+          - -c
+          - |
+            code-server --install-extension ms-python.python
+            code-server --install-extension golang.Go
+            code-server --install-extension ms-azuretools.vscode-docker
+        volumeMounts:
+          - name: data
+            mountPath: /home/coder
+      
+      containers:
+        - name: docker-dind
+          image: docker:19.03-dind
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256M
+          securityContext:
+            privileged: true
+            procMount: Default
+          env:
+          - name: DOCKER_TLS_CERTDIR
+            value: ""
+          - name: DOCKER_DRIVER
+            value: "overlay2"
+        
+        - name: code-server
+          image: "codercom/code-server:4.7.0"
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 1000
+          env:
+          - name: DISABLE_TELEMETRY
+            value: "true"
+          - name: DOCKER_HOST
+            value: tcp://localhost:2375
+          - name: PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: vcluster1-code-server
+                key: password
+          volumeMounts:
+          - name: data
+            mountPath: /home/coder
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {}
+      serviceAccountName: vcluster1-code-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: vcluster1-code-server
+---
+# Source: code-server/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vcluster1-code-server
+  labels:
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/name: code-server
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/version: "4.7.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingressClassName: contour-external
+  rules:
+    - host: "code-server-in-vcluster.bobymcbobs.pair.sharing.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vcluster1-code-server
+                port: 
+                  number: 8080
+---
+# Source: code-server/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vcluster1-code-server
+  annotations:
+    "helm.sh/hook": "pre-install"
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  
+  password: "YkFma2VpTVZwVmdRYXU3ajB0SVV6ak5G"
+---
+# Source: code-server/templates/tests/test-connection.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "vcluster1-code-server-test-connection"
+  labels:
+    app.kubernetes.io/name: code-server
+    helm.sh/chart: code-server-3.2.2
+    app.kubernetes.io/instance: vcluster1
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['vcluster1-code-server:8080']
+  restartPolicy: Never

@@ -1,0 +1,33 @@
+ingress:
+  enabled: true
+  ingressClassName: contour-external
+  hosts:
+    - host: code-server-in-vcluster.bobymcbobs.pair.sharing.io
+      paths:
+        - /
+
+persistence:
+  storageClass: local-path
+
+extraVars:
+ - name: DISABLE_TELEMETRY
+   value: true
+ - name: DOCKER_HOST
+   value: "tcp://localhost:2375"
+extraContainers: |
+# If docker-dind is used, DOCKER_HOST env is mandatory to set in "extraVars"
+- name: docker-dind
+ image: docker:19.03-dind
+ imagePullPolicy: IfNotPresent
+ resources:
+   requests:
+     cpu: 250m
+     memory: 256M
+ securityContext:
+   privileged: true
+   procMount: Default
+ env:
+ - name: DOCKER_TLS_CERTDIR
+   value: ""
+ - name: DOCKER_DRIVER
+   value: "overlay2"
